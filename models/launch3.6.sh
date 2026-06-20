@@ -1,0 +1,1 @@
+llama-cli -m Qwen3.6-27B-Q4_K_P.gguf --n-gpu-layers -1 --reasoning off

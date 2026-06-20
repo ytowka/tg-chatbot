@@ -1,0 +1,13 @@
+.venv
+.idea
+__pycache__
+*.pyc
+
+# Secrets
+.env
+
+# Model weights
+models/*.gguf
+
+# Runtime storage
+data/

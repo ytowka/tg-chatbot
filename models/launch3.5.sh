@@ -1,0 +1,1 @@
+llama-cli -m Qwen3.5-9B-Q6_K.gguf --reasoning off

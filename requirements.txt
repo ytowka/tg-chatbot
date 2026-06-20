@@ -1,0 +1,9 @@
+aiogram==3.29.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+
+# llama-cpp-python собирается отдельно с поддержкой Metal:
+#   CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --upgrade --force-reinstall --no-cache-dir
+# В requirements.txt не пиннится жёстко, чтобы не пересобирать при каждом pip install -r.
+llama-cpp-python>=0.3.31

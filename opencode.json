@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": true,
+  "plugin": [
+    "opencode-browser"
+  ],
+  "experimental": {
+    "disable_paste_summary": true,
+    "timeout_ms": 60000000,
+    "max_lines": null,
+    "max_bytes": null
+  },
+  "mcp": {
+    "browsermcp": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@browsermcp/mcp@0.1.3"
+      ],
+      "enabled": true
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "{env:ctx7sk-0ab3c035-cb5e-4983-b87a-3d81bae8f85e}"
+      }
+    }
+  },
+  "watcher": {
+    "ignore": [
+      "text/",
+    ]
+  }
+}
