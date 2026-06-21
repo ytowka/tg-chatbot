@@ -14,7 +14,7 @@ from . import prompts, tools
 log = logging.getLogger(__name__)
 
 _llama: Llama | None = None
-_MAX_TOOL_ROUNDS = 3
+_MAX_TOOL_ROUNDS = 2
 _THINK_CLOSE = "</think>"
 
 
@@ -33,6 +33,26 @@ def _strip_thinking(text: str) -> str:
     if "<think>" in text:
         return ""
     return text.strip()
+
+
+def _extract_thinking(text: str) -> str:
+    """Достать thinking-часть из сырого ответа модели."""
+    if not text:
+        return ""
+    if _THINK_CLOSE in text:
+        return text.split(_THINK_CLOSE, 1)[0].replace("<think>", "").strip()
+    if "<think>" in text:
+        return text.replace("<think>", "").strip()
+    return ""
+
+
+def _log_thinking(message: dict[str, Any], round_idx: int) -> None:
+    """Вывести thinking модели в консоль."""
+    content = message.get("content") or ""
+    reasoning = message.get("reasoning_content") or ""
+    thinking = _extract_thinking(content) or reasoning
+    if thinking:
+        log.info("[round %d] THINKING:\n%s", round_idx, thinking)
 
 
 def _clean_assistant_for_history(message: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +87,49 @@ def get_llama() -> Llama:
     return _llama
 
 
+def _disable_thinking(llm: Llama) -> None:
+    """Отключить thinking mode, перезаписав chat template handler.
+
+    Qwen3 chat template генерирует '<think>\\n' (thinking enabled) или
+    '<think>\\n\\n</think>\\n\\n' (thinking disabled) в зависимости от
+    переменной enable_thinking. llama-cpp-python 0.3.31 не позволяет
+    передать эту переменную через create_chat_completion, поэтому мы
+    патчим template, чтобы всегда вставлять пустой thinking-блок.
+    """
+    from llama_cpp import llama_chat_format
+
+    template = llm.metadata.get("tokenizer.chat_template", "")
+    if not template or "enable_thinking" not in template:
+        return
+
+    patched = template.replace(
+        "{%- if enable_thinking is defined and enable_thinking is false %}\n"
+        "    {{- '<think>\\n\\n</think>\\n\\n' }}\n"
+        "{%- else %}\n"
+        "    {{- '<think>\\n' }}\n"
+        "{%- endif %}",
+        "{{- '<think>\\n\\n</think>\\n\\n' }}",
+    )
+    if patched == template:
+        patched = template.replace(
+            "{%- if enable_thinking is defined and enable_thinking is false %}",
+            "{%- if true %}",
+        )
+
+    eos_token = llm.metadata.get("tokenizer.ggml.eos_token", "<|im_end|>")
+    bos_token = llm.metadata.get("tokenizer.ggml.bos_token", "")
+    eos_token_id = int(llm.metadata.get("tokenizer.ggml.eos_token_id", 151645))
+
+    formatter = llama_chat_format.Jinja2ChatFormatter(
+        template=patched,
+        eos_token=eos_token,
+        bos_token=bos_token,
+        stop_token_ids=[eos_token_id],
+    )
+    llm._chat_handlers[llm.chat_format] = formatter.to_chat_handler()
+    log.info("Thinking mode disabled via template patch")
+
+
 def _chat_sync(
     messages: list[dict[str, Any]],
     tools_def: list[dict[str, Any]] | None = None,
@@ -78,6 +141,7 @@ def _chat_sync(
         "max_tokens": max_tokens or settings.max_tokens,
         "temperature": settings.temperature,
         "top_p": settings.top_p,
+        "repeat_penalty": settings.repeat_penalty,
     }
     if tools_def:
         kwargs["tools"] = tools_def
@@ -108,6 +172,7 @@ async def chat(
     for round_idx in range(_MAX_TOOL_ROUNDS):
         last_resp = await asyncio.to_thread(_chat_sync, current, tools_def, max_tokens)
         message = last_resp["choices"][0]["message"]
+        _log_thinking(message, round_idx)
 
         tool_calls = message.get("tool_calls")
         if not tool_calls and use_tools:

@@ -162,13 +162,14 @@ async def on_text(message: Message, bot: Bot) -> None:
 
     status = await message.answer("⏳ Думаю…")
 
-    # TTL-очистка контекста (с обновлением памяти) перед обработкой
+    # TTL-очистка контекста: компактим в фон, не блокируем ответ
     try:
         if context_store.is_expired() and context_store.get_message_count() > 0:
-            await _maybe_compact_memory()
+            dialog = context_store.get_messages_for_llm()
             context_store.clear()
+            asyncio.create_task(_compact_memory_background(dialog))
     except Exception:
-        log.exception("TTL compaction failed; clearing context anyway")
+        log.exception("TTL check failed; clearing context anyway")
         context_store.clear()
 
     # Добавляем пользовательский запрос в контекст
@@ -213,7 +214,7 @@ async def on_text(message: Message, bot: Bot) -> None:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
 async def _maybe_compact_memory() -> None:
-    """Сжать текущий контекст в memory.json. Запускается перед очисткой."""
+    """Сжать текущий контекст в memory.json. Используется в /reset."""
     dialog = context_store.get_messages_for_llm()
     if not dialog:
         return
@@ -222,6 +223,21 @@ async def _maybe_compact_memory() -> None:
     compacted = compacted.strip()
     if compacted:
         memory.update_summary(compacted)
+
+
+async def _compact_memory_background(dialog: list[dict[str, str]]) -> None:
+    """Фоновая компакция контекста в память. Не блокирует ответ пользователю."""
+    try:
+        if not dialog:
+            return
+        previous_memory = memory.to_prompt_block()
+        compacted = await engine.compact_dialog_for_memory(dialog, previous_memory)
+        compacted = compacted.strip()
+        if compacted:
+            memory.update_summary(compacted)
+            log.info("background memory compaction done")
+    except Exception:
+        log.exception("background memory compaction failed")
 
 
 async def _edit_or_reply(status: Message, text: str) -> None:

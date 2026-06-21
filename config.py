@@ -17,22 +17,23 @@ class Settings(BaseSettings):
     bot_username: str = ""
 
     # Trigger
-    trigger_phrase: str = "сильвер"
+    trigger_phrase: str = "Цветочный лох"
 
     # Context
     context_ttl_hours: int = 6
-    history_window: int = 30
+    history_window: int = 15
 
     # Timezone (IANA name)
     timezone: str = "Europe/Moscow"
 
     # Model
-    model_path: Path = BASE_DIR / "models" / "Qwen3.5-9B-Q6_K.gguf"
+    model_path: Path = BASE_DIR / "models" / "Qwen3.6-27B-Q4_K_P.gguf"
     n_gpu_layers: int = -1
-    n_ctx: int = 32768
+    n_ctx: int = 24576
     max_tokens: int = 2048
-    temperature: float = 0.5
+    temperature: float = 0.4
     top_p: float = 0.9
+    repeat_penalty: float = 1.15
 
     # Storage (runtime data dir; Python package is storage/)
     data_dir: Path = BASE_DIR / "data"
