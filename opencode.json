@@ -1,6 +1,24 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
+  "provider": {
+    "llama.cpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama-server (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8082/v1"
+      },
+      "models": {
+        "glm-4.7-flash": {
+          "name": "GLM-4.7-Flash (local)",
+          "limit": {
+            "context": 130000,
+            "output": 24576
+          }
+        }
+      }
+    }
+  },
   "plugin": [
     "opencode-browser"
   ],
@@ -30,7 +48,7 @@
   },
   "watcher": {
     "ignore": [
-      "text/",
+      "text/"
     ]
   }
 }
