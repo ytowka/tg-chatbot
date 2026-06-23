@@ -1,11 +1,13 @@
 """Определение, нужно ли отвечать на сообщение группы."""
 from __future__ import annotations
 
+import random
 from typing import Any
 
 from aiogram.types import Message
 
 from config import settings
+from storage import features
 
 
 def _normalize_username(s: str) -> str:
@@ -51,8 +53,31 @@ def is_reply_to_bot(message: Message, bot_user_id: int | None) -> bool:
     return reply_from is not None and reply_from.id == bot_user_id
 
 
+def should_random_reply(message: Message, bot_user_id: int | None) -> bool:
+    """Случайный ответ на любое сообщение с заданной вероятностью.
+
+    Условия срабатывания:
+      - флаг random_reply включён (переключается командой /randomreply);
+      - сообщение не является командой (не начинается с '/');
+      - отправитель — не сам бот;
+      - random.random() < settings.random_reply_chance.
+    """
+    if not features.is_random_reply_enabled():
+        return False
+    text = message.text or message.caption or ""
+    if text.startswith("/"):
+        return False
+    if (
+        bot_user_id is not None
+        and message.from_user is not None
+        and message.from_user.id == bot_user_id
+    ):
+        return False
+    return random.random() < settings.random_reply_chance
+
+
 def should_reply(message: Message, bot_user_id: int | None) -> bool:
-    """Сводный триггер: отвечать, если упоминание / фраза / reply на бота."""
+    """Сводный триггер: отвечать, если упоминание / фраза / reply на бота / случайный ответ."""
     text = message.text or message.caption or ""
     if not text:
         return False
@@ -61,6 +86,8 @@ def should_reply(message: Message, bot_user_id: int | None) -> bool:
     if is_bot_mention_entity(message):
         return True
     if is_reply_to_bot(message, bot_user_id):
+        return True
+    if should_random_reply(message, bot_user_id):
         return True
     return False
 

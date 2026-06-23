@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Trigger
     trigger_phrase: str = "Цветочный лох"
 
+    # Random reply: вероятность ответа на любое сообщение (даже без триггера)
+    random_reply_chance: float = 0.03
+
     # Context
     context_ttl_hours: int = 6
     history_window: int = 15
@@ -57,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def summaries_dir(self) -> Path:
         return self.data_dir / "summaries"
+
+    @property
+    def features_file(self) -> Path:
+        return self.data_dir / "features.json"
 
     @property
     def bot_username_lower(self) -> str:

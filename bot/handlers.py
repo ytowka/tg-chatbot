@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from config import settings
 from llm import engine, prompts
 from storage import context as context_store
-from storage import history, memory
+from storage import features, history, memory
 from bot import triggers
 
 log = logging.getLogger(__name__)
@@ -64,7 +64,8 @@ async def cmd_start(message: Message) -> None:
         "либо ответив (reply) на моё сообщение.\n\n"
         "Команды:\n"
         "/summary — сводка вчерашних сообщений\n"
-        "/reset — очистить контекст диалога"
+        "/reset — очистить контекст диалога\n"
+        "/randomreply — включить/выключить случайные ответы"
     )
 
 
@@ -81,6 +82,39 @@ async def cmd_reset(message: Message) -> None:
     context_store.clear()
     with suppress(TelegramBadRequest):
         await status.edit_text("✅ Контекст очищен. Память обновлена.")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /randomreply — включить/выключить случайные ответы на любые сообщения
+# ─────────────────────────────────────────────────────────────────────
+@router.message(Command("randomreply"))
+async def cmd_randomreply(message: Message, command: CommandObject) -> None:
+    current = features.is_random_reply_enabled()
+    arg = (command.args or "").strip().lower() if command.args else ""
+    if arg in ("on", "1", "вкл", "да", "true", "yes"):
+        new_state = True
+    elif arg in ("off", "0", "выкл", "нет", "false", "no"):
+        new_state = False
+    else:
+        # Без аргумента — инвертируем текущее состояние
+        new_state = not current
+
+    if new_state == current:
+        state_text = "включены ✅" if new_state else "выключены ❌"
+        with suppress(TelegramBadRequest):
+            await message.answer(
+                f"🎲 Случайные ответы уже {state_text}.\n"
+                f"Вероятность срабатывания: {settings.random_reply_chance:.1%}."
+            )
+        return
+
+    features.set_random_reply_enabled(new_state)
+    state_text = "включены ✅" if new_state else "выключены ❌"
+    with suppress(TelegramBadRequest):
+        await message.answer(
+            f"🎲 Случайные ответы теперь {state_text}.\n"
+            f"Вероятность срабатывания: {settings.random_reply_chance:.1%}."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────
