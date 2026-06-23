@@ -11,4 +11,6 @@ llama-server \
   --min-p 0.00 \
   -c 64000 \
   -ctk q8_0 -ctv q8_0 \
-  --host 127.0.0.1
+  --host 127.0.0.1 \
+  --reasoning-budget 1024 \
+  --chat-template-kwargs '{"enable_thinking":false}'

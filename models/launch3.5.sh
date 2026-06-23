@@ -8,5 +8,7 @@ llama-cli \
   --top-k 20 \
   --min-p 0.00 \
   -c 64000 \
-  --presence_penalty 1.5
-  -ctk q8_0 -ctv q8_0
+  --presence_penalty 1.5 \
+  -ctk q8_0 -ctv q8_0 \
+  --reasoning off \
+  --chat-template-kwargs '{"enable_thinking":false}'
