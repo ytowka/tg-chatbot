@@ -5,10 +5,11 @@ import asyncio
 import datetime as _dt
 import logging
 import re
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -26,6 +27,9 @@ router = Router()
 # Per-user блокировка, чтобы запросы одного пользователя не соревновались за инстанс LLM.
 _user_locks: dict[int, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
+
+# Интервал переотправки индикатора «печатает…»: индикатор Telegram живёт ~5с, 4с даёт запас.
+_TYPING_INTERVAL = 4.0
 
 
 _MD_DOUBLE_ASTERISK = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
@@ -73,15 +77,15 @@ async def cmd_start(message: Message) -> None:
 # /reset — принудительная очистка контекста (с обновлением памяти)
 # ─────────────────────────────────────────────────────────────────────
 @router.message(Command("reset"))
-async def cmd_reset(message: Message) -> None:
-    status = await message.answer("⏳ Сохраняю контекст в память перед очисткой…")
-    try:
-        await _maybe_compact_memory()
-    except Exception:
-        log.exception("memory compaction failed during /reset")
-    context_store.clear()
+async def cmd_reset(message: Message, bot: Bot) -> None:
+    async with _typing_pulse(bot, message.chat.id):
+        try:
+            await _maybe_compact_memory()
+        except Exception:
+            log.exception("memory compaction failed during /reset")
+        context_store.clear()
     with suppress(TelegramBadRequest):
-        await status.edit_text("✅ Контекст очищен. Память обновлена.")
+        await message.reply("✅ Контекст очищен. Память обновлена.")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -121,7 +125,7 @@ async def cmd_randomreply(message: Message, command: CommandObject) -> None:
 # /summary — сводка за вчера
 # ─────────────────────────────────────────────────────────────────────
 @router.message(Command("summary"))
-async def cmd_summary(message: Message, command: CommandObject) -> None:
+async def cmd_summary(message: Message, command: CommandObject, bot: Bot) -> None:
     tz = ZoneInfo(settings.timezone)
     today = _dt.datetime.now(tz=tz).date()
     # Опциональный аргумент — дата в формате YYYY-MM-DD; по умолчанию вчера
@@ -137,28 +141,27 @@ async def cmd_summary(message: Message, command: CommandObject) -> None:
             return
 
     date_str = target_date.isoformat()
-    status = await message.answer(f"⏳ Собираю сводку за {date_str}…")
-
-    msgs = history.read_day(date_str)
-    if not msgs:
-        with suppress(TelegramBadRequest):
-            await status.edit_text(f"За {date_str} сообщений не было.")
-        return
-
-    lock = await _get_user_lock(message.from_user.id)
-    async with lock:
-        try:
-            summary = await engine.summarize_day(msgs, date_str)
-        except Exception as e:
-            log.exception("summary generation failed")
+    async with _typing_pulse(bot, message.chat.id):
+        msgs = history.read_day(date_str)
+        if not msgs:
             with suppress(TelegramBadRequest):
-                await status.edit_text(f"{prompts.ERROR_PREFIX}\n\n{e}")
+                await message.reply(f"За {date_str} сообщений не было.")
             return
 
-    summary = summary.strip()
-    if not summary:
-        summary = "(не удалось сгенерировать сводку — модель не успела за лимит токенов)"
-    await _edit_or_reply(status, summary)
+        lock = await _get_user_lock(message.from_user.id)
+        async with lock:
+            try:
+                summary = await engine.summarize_day(msgs, date_str)
+            except Exception as e:
+                log.exception("summary generation failed")
+                with suppress(TelegramBadRequest):
+                    await message.reply(f"{prompts.ERROR_PREFIX}\n\n{e}")
+                return
+
+        summary = summary.strip()
+        if not summary:
+            summary = "(не удалось сгенерировать сводку — модель не успела за лимит токенов)"
+        await _reply_text(message, summary)
 
     # Кешируем готовую сводку
     try:
@@ -194,54 +197,53 @@ async def on_text(message: Message, bot: Bot) -> None:
         username = "?"
         first_name = ""
 
-    status = await message.answer("⏳ Думаю…")
-
-    # TTL-очистка контекста: компактим в фон, не блокируем ответ
-    try:
-        if context_store.is_expired() and context_store.get_message_count() > 0:
-            dialog = context_store.get_messages_for_llm()
-            context_store.clear()
-            asyncio.create_task(_compact_memory_background(dialog))
-    except Exception:
-        log.exception("TTL check failed; clearing context anyway")
-        context_store.clear()
-
-    # Добавляем пользовательский запрос в контекст
-    context_store.append_user_message(
-        message.chat.id, username, user_query, first_name=first_name
-    )
-    context_store.touch(message.chat.id)
-
-    # Последние сообщения группы — чтобы модель видела контекст беседы
-    recent = history.read_recent(settings.history_window)
-
-    # Собираем сообщения для LLM: system + history из контекста
-    system_prompt = prompts.build_system_prompt(recent_history=recent)
-    llm_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    llm_messages.extend(context_store.get_messages_for_llm())
-
-    lock = await _get_user_lock(message.from_user.id)
-    async with lock:
+    async with _typing_pulse(bot, message.chat.id):
+        # TTL-очистка контекста: компактим в фон, не блокируем ответ
         try:
-            answer = await engine.chat(llm_messages, use_tools=True)
-        except Exception as e:
-            log.exception("chat generation failed")
-            with suppress(TelegramBadRequest):
-                await status.edit_text(f"{prompts.ERROR_PREFIX}\n\n{e}")
-            return
+            if context_store.is_expired() and context_store.get_message_count() > 0:
+                dialog = context_store.get_messages_for_llm()
+                context_store.clear()
+                asyncio.create_task(_compact_memory_background(dialog))
+        except Exception:
+            log.exception("TTL check failed; clearing context anyway")
+            context_store.clear()
 
-    answer = answer.strip()
-    if not answer:
-        answer = (
-            "(не удалось сгенерировать ответ — модель не уложилась в лимит токенов. "
-            "Попробуй переформулировать или разбить на части.)"
+        # Добавляем пользовательский запрос в контекст
+        context_store.append_user_message(
+            message.chat.id, username, user_query, first_name=first_name
         )
+        context_store.touch(message.chat.id)
 
-    # Сохраняем ответ в контексте и обновляем метку времени
-    context_store.append_assistant_message(answer)
-    context_store.touch(message.chat.id)
+        # Последние сообщения группы — чтобы модель видела контекст беседы
+        recent = history.read_recent(settings.history_window)
 
-    await _edit_or_reply(status, answer)
+        # Собираем сообщения для LLM: system + history из контекста
+        system_prompt = prompts.build_system_prompt(recent_history=recent)
+        llm_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        llm_messages.extend(context_store.get_messages_for_llm())
+
+        lock = await _get_user_lock(message.from_user.id)
+        async with lock:
+            try:
+                answer = await engine.chat(llm_messages, use_tools=True)
+            except Exception as e:
+                log.exception("chat generation failed")
+                with suppress(TelegramBadRequest):
+                    await message.reply(f"{prompts.ERROR_PREFIX}\n\n{e}")
+                return
+
+        answer = answer.strip()
+        if not answer:
+            answer = (
+                "(не удалось сгенерировать ответ — модель не уложилась в лимит токенов. "
+                "Попробуй переформулировать или разбить на части.)"
+            )
+
+        # Сохраняем ответ в контексте и обновляем метку времени
+        context_store.append_assistant_message(answer)
+        context_store.touch(message.chat.id)
+
+        await _reply_text(message, answer)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -274,18 +276,37 @@ async def _compact_memory_background(dialog: list[dict[str, str]]) -> None:
         log.exception("background memory compaction failed")
 
 
-async def _edit_or_reply(status: Message, text: str) -> None:
-    """Заменить плейсхолдер на ответ. Если текст длиннее 4096 — обрезать.
+async def _pulse_loop(bot: Bot, chat_id: int) -> None:
+    """Переотправлять chat action typing, пока задача активна."""
+    try:
+        while True:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(_TYPING_INTERVAL)
+    except (TelegramBadRequest, asyncio.CancelledError):
+        pass
+
+
+@asynccontextmanager
+async def _typing_pulse(bot: Bot, chat_id: int):
+    """Держать индикатор «печатает…» пока выполняется блок внутри async with."""
+    task = asyncio.create_task(_pulse_loop(bot, chat_id))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _reply_text(message: Message, text: str) -> None:
+    """Отправить ответ reply на сообщение пользователя.
 
     Перед отправкой убирается markdown-разметка — Telegram получает plain text.
+    Если текст длиннее 4096 — обрезать.
     """
     text = _strip_markdown(text)
     MAX_LEN = 4096
     if len(text) > MAX_LEN:
         text = text[: MAX_LEN - 1].rstrip() + "…"
     with suppress(TelegramBadRequest):
-        await status.edit_text(text)
-        return
-    # Если edit не удался (например, текст не изменился) — пробуем reply
-    with suppress(TelegramBadRequest):
-        await status.reply(text)
+        await message.reply(text)
