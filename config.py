@@ -26,10 +26,14 @@ class Settings(BaseSettings):
     # Timezone (IANA name)
     timezone: str = "Europe/Moscow"
 
-    # Model
-    model_path: Path = BASE_DIR / "models" / "Qwen3.6-27B-Q4_K_P.gguf"
-    n_gpu_layers: int = -1
-    n_ctx: int = 24576
+    # LLM Backend (HTTP → llama-server на ноуте через SSH tunnel, или облако)
+    llm_mode: str = "local"
+    llm_base_url: str = "http://127.0.0.1:8081/v1"
+    llm_model: str = "qwen3.5-9b"
+    llm_api_key: str = "not-needed"
+    llm_request_timeout: int = 120
+
+    # Generation params (передаются в каждом запросе к LLM)
     max_tokens: int = 2048
     temperature: float = 0.4
     top_p: float = 0.9

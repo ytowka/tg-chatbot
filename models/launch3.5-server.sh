@@ -1,5 +1,7 @@
-llama-cli \
+llama-server \
   -m Qwen3.5-9B-Q6_K.gguf \
+  --alias qwen3.5-9b \
+  --port 8081 \
   --jinja \
   -ngl 99 \
   -np 1 \
@@ -8,5 +10,5 @@ llama-cli \
   --top-k 20 \
   --min-p 0.00 \
   -c 64000 \
-  --presence_penalty 1.5
-  -ctk q8_0 -ctv q8_0
+  -ctk q8_0 -ctv q8_0 \
+  --host 127.0.0.1

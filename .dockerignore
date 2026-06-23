@@ -1,0 +1,13 @@
+.venv/
+.git/
+.idea/
+__pycache__/
+*.pyc
+models/
+data/
+.env
+docs/
+test.py
+opencode.json
+*.md
+.DS_Store

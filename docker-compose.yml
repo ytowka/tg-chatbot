@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    container_name: chatbot
+    restart: unless-stopped
+
+    # network_mode: host — чтобы localhost:8081 в контейнере указывал на
+    # SSH reverse tunnel, который приземляется на localhost хоста.
+    # Иначе контейнер не достучится до llama-server на ноутбуке.
+    network_mode: host
+
+    env_file: .env
+
+    volumes:
+      - ./data:/app/data

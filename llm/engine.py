@@ -1,4 +1,4 @@
-"""LLM-движок: синглтон Llama + цикл генерации с tool calling."""
+"""LLM-движок: async HTTP-клиент (OpenAI-compatible) + цикл генерации с tool calling."""
 from __future__ import annotations
 
 import asyncio
@@ -6,14 +6,14 @@ import datetime as _dt
 import logging
 from typing import Any
 
-from llama_cpp import Llama
+from openai import AsyncOpenAI
 
 from config import settings
 from . import prompts, tools
 
 log = logging.getLogger(__name__)
 
-_llama: Llama | None = None
+_client: AsyncOpenAI | None = None
 _MAX_TOOL_ROUNDS = 2
 _THINK_CLOSE = "</think>"
 
@@ -72,80 +72,61 @@ def _clean_assistant_for_history(message: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def get_llama() -> Llama:
-    """Ленивая инициализация синглтона Llama(). Потокобезопасная через GIL."""
-    global _llama
-    if _llama is None:
-        log.info("Loading model: %s", settings.model_path)
-        _llama = Llama(
-            model_path=str(settings.model_path),
-            n_gpu_layers=settings.n_gpu_layers,
-            n_ctx=settings.n_ctx,
-            verbose=False,
-        )
-        log.info("Model loaded. n_ctx=%d, n_gpu_layers=%d", settings.n_ctx, settings.n_gpu_layers)
-    return _llama
+def get_client() -> AsyncOpenAI:
+    """Ленивая инициализация async-клиента к OpenAI-compatible API.
 
-
-def _disable_thinking(llm: Llama) -> None:
-    """Отключить thinking mode, перезаписав chat template handler.
-
-    Qwen3 chat template генерирует '<think>\\n' (thinking enabled) или
-    '<think>\\n\\n</think>\\n\\n' (thinking disabled) в зависимости от
-    переменной enable_thinking. llama-cpp-python 0.3.31 не позволяет
-    передать эту переменную через create_chat_completion, поэтому мы
-    патчим template, чтобы всегда вставлять пустой thinking-блок.
+    base_url указывает на llama-server (через SSH tunnel) или облачный API.
     """
-    from llama_cpp import llama_chat_format
-
-    template = llm.metadata.get("tokenizer.chat_template", "")
-    if not template or "enable_thinking" not in template:
-        return
-
-    patched = template.replace(
-        "{%- if enable_thinking is defined and enable_thinking is false %}\n"
-        "    {{- '<think>\\n\\n</think>\\n\\n' }}\n"
-        "{%- else %}\n"
-        "    {{- '<think>\\n' }}\n"
-        "{%- endif %}",
-        "{{- '<think>\\n\\n</think>\\n\\n' }}",
-    )
-    if patched == template:
-        patched = template.replace(
-            "{%- if enable_thinking is defined and enable_thinking is false %}",
-            "{%- if true %}",
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            timeout=settings.llm_request_timeout,
         )
-
-    eos_token = llm.metadata.get("tokenizer.ggml.eos_token", "<|im_end|>")
-    bos_token = llm.metadata.get("tokenizer.ggml.bos_token", "")
-    eos_token_id = int(llm.metadata.get("tokenizer.ggml.eos_token_id", 151645))
-
-    formatter = llama_chat_format.Jinja2ChatFormatter(
-        template=patched,
-        eos_token=eos_token,
-        bos_token=bos_token,
-        stop_token_ids=[eos_token_id],
-    )
-    llm._chat_handlers[llm.chat_format] = formatter.to_chat_handler()
-    log.info("Thinking mode disabled via template patch")
+        log.info(
+            "LLM client ready: %s (model=%s, mode=%s)",
+            settings.llm_base_url,
+            settings.llm_model,
+            settings.llm_mode,
+        )
+    return _client
 
 
-def _chat_sync(
+async def check_health() -> None:
+    """Проверить доступность LLM-сервера: GET /v1/models.
+
+    Заменяет preload модели — мгновенно, проверяет что туннель работает
+    и модель загружена на стороне llama-server.
+    """
+    client = get_client()
+    resp = await client.models.list()
+    model_ids = [m.id for m in resp.data]
+    log.info("LLM server healthy. Models: %s", model_ids)
+
+
+async def _chat_async(
     messages: list[dict[str, Any]],
     tools_def: list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
-    llama = get_llama()
+    """Один раунд генерации через OpenAI-compatible HTTP API."""
+    client = get_client()
     kwargs: dict[str, Any] = {
+        "model": settings.llm_model,
         "messages": messages,
         "max_tokens": max_tokens or settings.max_tokens,
         "temperature": settings.temperature,
         "top_p": settings.top_p,
-        "repeat_penalty": settings.repeat_penalty,
+        "extra_body": {
+            "repeat_penalty": settings.repeat_penalty,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     }
     if tools_def:
         kwargs["tools"] = tools_def
-    return llama.create_chat_completion(**kwargs)
+    response = await client.chat.completions.create(**kwargs)
+    return response.model_dump()
 
 
 def _extract_content(message: dict[str, Any]) -> str:
@@ -170,7 +151,7 @@ async def chat(
 
     last_resp: dict[str, Any] = {}
     for round_idx in range(_MAX_TOOL_ROUNDS):
-        last_resp = await asyncio.to_thread(_chat_sync, current, tools_def, max_tokens)
+        last_resp = await _chat_async(current, tools_def, max_tokens)
         message = last_resp["choices"][0]["message"]
         _log_thinking(message, round_idx)
 

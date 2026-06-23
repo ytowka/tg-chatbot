@@ -1,4 +1,4 @@
-"""Точка входа: инициализация бота, загрузка модели, запуск polling."""
+"""Точка входа: инициализация бота, проверка LLM-сервера, запуск polling."""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.handlers import router
 from bot.middleware import HistoryWriterMiddleware
 from config import settings
-from llm.engine import get_llama
+from llm.engine import check_health
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,20 +33,17 @@ def validate_env() -> None:
             "BOT_USERNAME не задан — нативный @mention-триггер работать не будет. "
             "Укажи username бота (без @) в .env."
         )
-    if not settings.model_path.exists():
-        raise RuntimeError(
-            f"Файл модели не найден: {settings.model_path}. "
-            "Положи GGUF в models/ и/или проверь MODEL_PATH в .env."
-        )
+    if not settings.llm_base_url:
+        raise RuntimeError("LLM_BASE_URL не задан в .env.")
 
 
 async def main_async() -> None:
     validate_env()
 
-    # Предзагружаем модель до приёма апдейтов (это занимает ~10-20 секунд).
-    log.info("Preloading model…")
-    await asyncio.to_thread(get_llama)
-    log.info("Model ready.")
+    # Проверяем доступность LLM-сервера (llama-server на ноуте через туннель).
+    log.info("Checking LLM server at %s …", settings.llm_base_url)
+    await check_health()
+    log.info("LLM server ready.")
 
     bot = Bot(
         token=settings.bot_token,
